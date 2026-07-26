@@ -1,0 +1,11 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Push to GitHub",
+			"type": "shell",
+			"command": "cmd /c \"cd /d C:\\Users\\edenm\\gki-kernel-builder && git remote remove origin 2>nul && git remote add origin https://github.com/Mikumaster6230/gki-kernel-builder.git && git branch -M main && git push -u origin main\"",
+			"isBackground": false
+		}
+	]
+}
