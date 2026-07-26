@@ -72,12 +72,10 @@ jobs:
       - name: Download and integrate KernelSU
         run: |
           cd ~/kernel
-          # Use KernelSU v1.0.5 – the last version natively compatible with Linux 5.4
-          # v3.0.0+ requires 5.10+ APIs (strncpy_from_user_nofault, linux/pgtable.h)
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v1.0.5
-          # Fix: current_sid() conflicts with kernel 5.4 SELinux – rename KSU's version
-          sed -i 's/\bcurrent_sid\b/ksu_current_sid/g' drivers/kernelsu/selinux/selinux.c
-          echo "KernelSU v1.0.5 integrated and patched for 5.4"
+          # Try KernelSU v2.1.2 – has ksu_strncpy_from_user_nofault wrapper, no pgtable.h dependency
+          # v1.0.5 SELinux code incompatible with 5.4; v3.0.0+ requires 5.10+ APIs
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v2.1.2
+          echo "KernelSU v2.1.2 integrated"
 
       - name: Configure kernel
         run: |
