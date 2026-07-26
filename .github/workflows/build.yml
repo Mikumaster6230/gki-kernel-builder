@@ -72,26 +72,42 @@ jobs:
       - name: Download and integrate KernelSU
         run: |
           cd ~/kernel
-          # KernelSU v2.1.2 – has ksu_strncpy_from_user_nofault wrapper, no pgtable.h dependency
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v2.1.2
-          # === KernelSU 5.4 compat: global compat header injected into ALL KSU sources ===
-          cat > drivers/kernelsu/ksu54compat.h << 'EOF'
-          #ifndef _KSU54COMPAT_H
-          #define _KSU54COMPAT_H
-          #include <linux/sched.h>
-          /* TWA_RESUME: added in kernel 5.7 */
-          #ifndef TWA_RESUME
-          #define TWA_RESUME 1
+          # Use latest KernelSU with minimal 5.4 compat patches
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          # === 5.4 compat: pgtable.h + strncpy_from_user_nofault ===
+          cat > include/linux/pgtable.h << 'EOF'
+          #ifndef _LINUX_PGTABLE_H
+          #define _LINUX_PGTABLE_H
+          #include <asm/pgtable.h>
+          #ifndef pte_index
+          static inline unsigned long pte_index(unsigned long a){return (a>>PAGE_SHIFT)&(PTRS_PER_PTE-1);}
+          #endif
+          #ifndef pmd_index
+          static inline unsigned long pmd_index(unsigned long a){return (a>>PMD_SHIFT)&(PTRS_PER_PMD-1);}
           #endif
           #endif
           EOF
-          # Force-include compat header in every KSU C file
-          for src in $(find drivers/kernelsu -name '*.c' -type f); do
-            if ! grep -q 'ksu54compat' "$src" 2>/dev/null; then
-              sed -i '1i#include "ksu54compat.h"' "$src"
-            fi
+          cat > include/linux/ksu54.h << 'EOF'
+          #ifndef _KSU54_H
+          #define _KSU54_H
+          #include <linux/uaccess.h>
+          #include <linux/sched.h>
+          #include <linux/sched/task.h>
+          #ifndef TWA_RESUME
+          #define TWA_RESUME 1
+          #endif
+          static inline long strncpy_from_user_nofault(char *d, const void __user *u, long n){
+            long r; pagefault_disable(); r=strncpy_from_user(d,(const char __user*)u,n); pagefault_enable(); return r;
+          }
+          #endif
+          EOF
+          # Inject compat header into all KSU C files
+          for f in $(find drivers/kernelsu -name '*.c'); do
+            grep -q ksu54.h "$f" 2>/dev/null || sed -i '1i#include "ksu54.h"' "$f"
           done
-          echo "KernelSU v2.1.2 + global 5.4 compat applied"
+          # Disable KSU SELinux module (incompatible with 5.4 internal APIs)
+          sed -i 's/obj-\$(CONFIG_KSU)/# disabled-for-5.4 # &/' drivers/kernelsu/selinux/Makefile 2>/dev/null || true
+          echo "KernelSU integrated with 5.4 compat"
 
       - name: Configure kernel
         run: |
