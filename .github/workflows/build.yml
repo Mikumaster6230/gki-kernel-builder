@@ -159,14 +159,14 @@ jobs:
           scripts/config --file out/.config --enable MODULES
           scripts/config --file out/.config --enable MODULE_UNLOAD
           scripts/config --file out/.config --disable DEBUG_INFO
-          # Resolve ALL new config options non-interactively (CC=clang is critical)
-          make O=out ARCH=arm64 CC=clang LD=ld.lld CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make O=out ARCH=arm64 olddefconfig
 
       - name: Build kernel
         run: |
           cd ~/kernel
-          # Prevent make from re-triggering interactive config sync
-          export KCONFIG_NOSILENTUPDATE=1
+          # Sync config with clang environment (resolves LTO_CLANG, SHADOW_CALL_STACK, RELR etc.)
+          make O=out ARCH=arm64 CC=clang LD=ld.lld CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          # Build
           make O=out \
             ARCH=arm64 \
             CC=clang \
