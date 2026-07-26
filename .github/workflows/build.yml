@@ -57,15 +57,15 @@ jobs:
           path: ~/kernel
           key: gki-5.4-source-v12
 
-      - name: Clone GKI 5.4 kernel source
+      - name: Clone GKI 5.10 kernel source
         if: steps.cache-kernel.outputs.cache-hit != 'true'
         run: |
           git clone --depth=1 --single-branch \
-            -b android12-5.4 \
+            -b android13-5.10 \
             https://github.com/aosp-mirror/kernel_common.git \
             ~/kernel || \
           git clone --depth=1 --single-branch \
-            -b deprecated/android12-5.4 \
+            -b deprecated/android13-5.10 \
             https://github.com/aosp-mirror/kernel_common.git \
             ~/kernel
 
@@ -81,14 +81,8 @@ jobs:
         run: |
           cd ~/kernel
           make O=out ARCH=arm64 mrproper 2>/dev/null || true
-          make O=out ARCH=arm64 gki_defconfig
-          scripts/config --file out/.config --enable KPROBES
-          scripts/config --file out/.config --enable HAVE_KPROBES
-          scripts/config --file out/.config --enable KPROBE_EVENTS
-          scripts/config --file out/.config --enable OVERLAY_FS
-          scripts/config --file out/.config --enable MODULES
-          scripts/config --file out/.config --enable MODULE_UNLOAD
-          scripts/config --file out/.config --disable DEBUG_INFO
+          # Use STOCK kernel config extracted from device boot.img (NOT gki_defconfig!)
+          cp $GITHUB_WORKSPACE/stock_defconfig out/.config
           make O=out ARCH=arm64 olddefconfig
 
       - name: Build kernel
