@@ -55,7 +55,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/kernel
-          key: gki-5.4-source-v10
+          key: gki-5.4-source-v12
 
       - name: Clone GKI 5.4 kernel source
         if: steps.cache-kernel.outputs.cache-hit != 'true'
@@ -72,80 +72,9 @@ jobs:
       - name: Download and integrate KernelSU
         run: |
           cd ~/kernel
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-
-      - name: Fix KernelSU 5.4 compat
-        run: |
-          cd ~/kernel
-          # Create kernel 5.4 compatibility header
-          cat > include/linux/ksu_54_compat.h << 'CEOF'
-          #ifndef _KSU_54_COMPAT_H
-          #define _KSU_54_COMPAT_H
-          #include <linux/uaccess.h>
-          #include <linux/kernel.h>
-          /* ===== pgtable.h shim (5.8+ API) ===== */
-          #include <asm/pgtable.h>
-          #ifndef pte_index
-          static inline unsigned long pte_index(unsigned long a) { return (a >> PAGE_SHIFT) & (PTRS_PER_PTE - 1); }
-          #endif
-          #ifndef pmd_index
-          static inline unsigned long pmd_index(unsigned long a) { return (a >> PMD_SHIFT) & (PTRS_PER_PMD - 1); }
-          #endif
-          #ifndef pud_index
-          static inline unsigned long pud_index(unsigned long a) { return (a >> PUD_SHIFT) & (PTRS_PER_PUD - 1); }
-          #endif
-          #ifndef p4d_index
-          static inline unsigned long p4d_index(unsigned long a) { return (a >> P4D_SHIFT) & (PTRS_PER_P4D - 1); }
-          #endif
-          /* ===== strncpy_from_user_nofault wrapper (5.10+ API, backport for 5.4) ===== */
-          static inline long strncpy_from_user_nofault(char *dst, const void __user *unsafe_addr, long count)
-          {
-            long ret;
-            pagefault_disable();
-            ret = strncpy_from_user(dst, (const char __user *)unsafe_addr, count);
-            pagefault_enable();
-            return ret;
-          }
-          /* ===== fallthrough macro (5.4 doesn't have it) ===== */
-          #ifndef fallthrough
-          #define fallthrough do {} while (0)  /* fallthrough */
-          #endif
-          #endif /* _KSU_54_COMPAT_H */
-          CEOF
-          # Create pgtable.h that includes our compat header
-          cat > include/linux/pgtable.h << 'PEOF'
-          #ifndef _LINUX_PGTABLE_H
-          #define _LINUX_PGTABLE_H
-          #include <asm/pgtable.h>
-          #ifndef pte_index
-          static inline unsigned long pte_index(unsigned long a) { return (a >> PAGE_SHIFT) & (PTRS_PER_PTE - 1); }
-          #endif
-          #ifndef pmd_index
-          static inline unsigned long pmd_index(unsigned long a) { return (a >> PMD_SHIFT) & (PTRS_PER_PMD - 1); }
-          #endif
-          #ifndef pud_index
-          static inline unsigned long pud_index(unsigned long a) { return (a >> PUD_SHIFT) & (PTRS_PER_PUD - 1); }
-          #endif
-          #ifndef p4d_index
-          static inline unsigned long p4d_index(unsigned long a) { return (a >> P4D_SHIFT) & (PTRS_PER_P4D - 1); }
-          #endif
-          #endif /* _LINUX_PGTABLE_H */
-          PEOF
-          # Add compat include to ALL KernelSU C source files (not just sucompat.c)
-          for src in $(find drivers/kernelsu -name '*.c' -type f); do
-            if ! grep -q 'ksu_54_compat' "$src" 2>/dev/null; then
-              sed -i '1i#include <linux/ksu_54_compat.h>' "$src"
-            fi
-          done
-          # Also add to kernel su headers used in main kernel tree
-          for hdr in $(find drivers/kernelsu -name '*.h' -type f); do
-            if grep -q 'strncpy_from_user_nofault\|pgtable\|pte_index\|pmd_index' "$hdr" 2>/dev/null; then
-              if ! grep -q 'ksu_54_compat' "$hdr" 2>/dev/null; then
-                sed -i '1i#include <linux/ksu_54_compat.h>' "$hdr"
-              fi
-            fi
-          done
-          echo "KernelSU 5.4 compat fixes applied to all source files"
+          # Use KernelSU v1.0.5 – the last version natively compatible with Linux 5.4
+          # v3.0.0+ requires 5.10+ APIs (strncpy_from_user_nofault, linux/pgtable.h)
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v1.0.5
 
       - name: Configure kernel
         run: |
