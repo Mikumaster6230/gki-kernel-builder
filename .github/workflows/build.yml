@@ -72,17 +72,86 @@ jobs:
       - name: Download and integrate KernelSU
         run: |
           cd ~/kernel
-          # KernelSU v0.9.5 — 官方推荐用于非 GKI/旧内核, 使用 kprobe 自动集成
-          # 内核 5.4 kprobe 工作正常; v1.0+ 不支持非 GKI; v3.0+ 放弃 GKI 支持
+          # KernelSU v0.9.5 — manual integration (kprobe doesn't work on this device)
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-          echo "KernelSU v0.9.5 integrated via kprobe"
+          echo "KernelSU v0.9.5 downloaded"
+
+      - name: Apply KSU manual kernel patches
+        run: |
+          cd ~/kernel
+          # === Patch 1: fs/exec.c - do_execveat_common ===
+          KSU_EXEC_HOOK='
+          #ifdef CONFIG_KSU
+          extern bool ksu_execveat_hook __read_mostly;
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
+          extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
+          #endif
+          '
+          sed -i "/^static int do_execveat_common/i${KSU_EXEC_HOOK}" fs/exec.c
+          sed -i '/^static int do_execveat_common/,/^{/!b; /^{/a\
+          #ifdef CONFIG_KSU\
+          \tif (unlikely(ksu_execveat_hook))\
+          \t\tksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\
+          \telse\
+          \t\tksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\
+          #endif' fs/exec.c
+          echo "Patch 1/4: fs/exec.c done"
+
+          # === Patch 2: fs/open.c - faccessat ===
+          KSU_OPEN_HOOK='
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
+          #endif
+          '
+          sed -i "/^SYSCALL_DEFINE3(faccessat/i${KSU_OPEN_HOOK}" fs/open.c
+          # Find the first "if (mode" line after faccessat and insert before it
+          sed -i '/SYSCALL_DEFINE3(faccessat/,/if (mode/{/if (mode/i\
+          \t#ifdef CONFIG_KSU\
+          \t\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
+          \t#endif
+          }' fs/open.c
+          echo "Patch 2/4: fs/open.c done"
+
+          # === Patch 3: fs/read_write.c - vfs_read ===
+          KSU_READ_HOOK='
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);
+          #endif
+          '
+          sed -i "/^ssize_t vfs_read(/i${KSU_READ_HOOK}" fs/read_write.c
+          sed -i '/^ssize_t vfs_read(/,/^{/!b; /^{/a\
+          #ifdef CONFIG_KSU\
+          \tksu_handle_vfs_read(\&file, \&buf, \&count, \&pos);\
+          #endif' fs/read_write.c
+          echo "Patch 3/4: fs/read_write.c done"
+
+          # === Patch 4: fs/stat.c - vfs_fstatat ===
+          KSU_STAT_HOOK='
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+          #endif
+          '
+          sed -i "/^int vfs_fstatat(/i${KSU_STAT_HOOK}" fs/stat.c
+          sed -i '/^int vfs_fstatat(/,/^{/!b; /^{/a\
+          \t#ifdef CONFIG_KSU\
+          \t\tksu_handle_stat(\&dfd, \&filename, \&flag);\
+          \t#endif' fs/stat.c
+          echo "Patch 4/4: fs/stat.c done"
+
+          echo "All KSU manual patches applied"
 
       - name: Configure kernel
         run: |
           cd ~/kernel
           make O=out ARCH=arm64 mrproper 2>/dev/null || true
-          # Use STOCK kernel config extracted from device boot.img (NOT gki_defconfig!)
+          # Use STOCK kernel config from device boot.img
           cp $GITHUB_WORKSPACE/stock_defconfig out/.config
+          # Disable kprobe (manual integration doesn't need it, avoids safe mode issues)
+          scripts/config --file out/.config --disable KPROBES
+          scripts/config --file out/.config --disable KPROBE_EVENTS
+          scripts/config --file out/.config --disable HAVE_KPROBES
+          # Enable KernelSU
+          scripts/config --file out/.config --enable KSU
           make O=out ARCH=arm64 olddefconfig
 
       - name: Build kernel
