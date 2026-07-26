@@ -75,6 +75,9 @@ jobs:
           # Use KernelSU v1.0.5 – the last version natively compatible with Linux 5.4
           # v3.0.0+ requires 5.10+ APIs (strncpy_from_user_nofault, linux/pgtable.h)
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v1.0.5
+          # Fix: current_sid() already exists in kernel 5.4 SELinux headers – remove KSU's duplicate
+          sed -i '/^static inline u32 current_sid(void)/,/^}$/d' drivers/kernelsu/selinux/selinux.c
+          echo "KernelSU v1.0.5 integrated and patched for 5.4"
 
       - name: Configure kernel
         run: |
