@@ -74,20 +74,24 @@ jobs:
           cd ~/kernel
           # KernelSU v2.1.2 – has ksu_strncpy_from_user_nofault wrapper, no pgtable.h dependency
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v2.1.2
-          # === KernelSU v2.1.2 → Linux 5.4 compat fixes ===
-          # 1. TWA_RESUME added in kernel 5.7
-          if ! grep -q 'TWA_RESUME' drivers/kernelsu/kernel_compat.h 2>/dev/null; then
-            echo '#ifndef TWA_RESUME' >> drivers/kernelsu/kernel_compat.h
-            echo '#define TWA_RESUME 1' >> drivers/kernelsu/kernel_compat.h
-            echo '#endif' >> drivers/kernelsu/kernel_compat.h
-          fi
-          # 2. put_task_struct is in linux/sched.h on 5.4, not sched/task.h
-          for f in $(grep -rl 'put_task_struct' drivers/kernelsu/ 2>/dev/null); do
-            if ! grep -q 'linux/sched.h' "$f" 2>/dev/null; then
-              sed -i '1i#include <linux/sched.h>' "$f"
+          # === KernelSU 5.4 compat: global compat header injected into ALL KSU sources ===
+          cat > drivers/kernelsu/ksu54compat.h << 'EOF'
+          #ifndef _KSU54COMPAT_H
+          #define _KSU54COMPAT_H
+          #include <linux/sched.h>
+          /* TWA_RESUME: added in kernel 5.7 */
+          #ifndef TWA_RESUME
+          #define TWA_RESUME 1
+          #endif
+          #endif
+          EOF
+          # Force-include compat header in every KSU C file
+          for src in $(find drivers/kernelsu -name '*.c' -type f); do
+            if ! grep -q 'ksu54compat' "$src" 2>/dev/null; then
+              sed -i '1i#include "ksu54compat.h"' "$src"
             fi
           done
-          echo "KernelSU v2.1.2 + 5.4 compat fixes applied"
+          echo "KernelSU v2.1.2 + global 5.4 compat applied"
 
       - name: Configure kernel
         run: |
