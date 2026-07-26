@@ -1,0 +1,284 @@
+name: Build GKI 5.4 Kernel with KernelSU
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: '内核版本标签'
+        required: false
+        default: '5.4'
+      device_name:
+        description: '设备名称'
+        required: false
+        default: 'meizu18s'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up environment variables
+        run: |
+          echo "KERNEL_VERSION=${{ github.event.inputs.kernel_version || '5.4' }}" >> $GITHUB_ENV
+          echo "DEVICE=${{ github.event.inputs.device_name || 'meizu18s' }}" >> $GITHUB_ENV
+          echo "BUILD_TIME=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_ENV
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            git ccache automake flex lzop bison gperf build-essential \
+            zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 \
+            libbz2-dev squashfs-tools dpkg-dev liblz4-tool make \
+            libssl-dev libc6-dev-i386 lib32ncurses6-dev \
+            x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
+            xsltproc unzip device-tree-compiler bc kmod cpio \
+            python3 python3-pip wget ca-certificates
+
+      - name: Cache AOSP Clang toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain/clang
+          key: clang-r416183b-v2
+
+      - name: Download AOSP Clang r416183b
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          echo ">>> 下载 AOSP Clang r416183b 工具链..."
+          mkdir -p ~/toolchain/clang
+          cd ~/toolchain/clang
+          # 从 Google Source 下载指定版本的 clang
+          wget -q --show-progress \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r416183b.tar.gz" \
+            -O clang-r416183b.tar.gz 2>&1 || \
+          wget -q --show-progress \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/4c8f6c4149b0d0a92e931e7b7c5c80192b2399b8/clang-r416183b.tar.gz" \
+            -O clang-r416183b.tar.gz 2>&1
+          tar xf clang-r416183b.tar.gz
+          rm clang-r416183b.tar.gz
+          echo "Clang 版本:"
+          ./bin/clang --version || true
+
+      - name: Cache GCC toolchain (arm64)
+        id: cache-gcc-arm64
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain/gcc-arm64
+          key: gcc-arm64-v1
+
+      - name: Download GCC arm64 toolchain
+        if: steps.cache-gcc-arm64.outputs.cache-hit != 'true'
+        run: |
+          echo ">>> 下载 GCC arm64 工具链..."
+          git clone --depth=1 --quiet \
+            https://github.com/aosp-mirror/platform_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            ~/toolchain/gcc-arm64
+
+      - name: Cache GCC toolchain (arm32)
+        id: cache-gcc-arm32
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain/gcc-arm32
+          key: gcc-arm32-v1
+
+      - name: Download GCC arm32 toolchain
+        if: steps.cache-gcc-arm32.outputs.cache-hit != 'true'
+        run: |
+          echo ">>> 下载 GCC arm32 工具链..."
+          git clone --depth=1 --quiet \
+            https://github.com/aosp-mirror/platform_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
+            ~/toolchain/gcc-arm32
+
+      - name: Cache kernel source
+        id: cache-kernel
+        uses: actions/cache@v4
+        with:
+          path: ~/kernel
+          key: gki-5.4-source-v2
+
+      - name: Clone GKI 5.4 kernel source
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
+        run: |
+          echo ">>> 克隆 GKI 5.4 内核源码..."
+          git clone --depth=1 --single-branch \
+            -b android12-5.4 \
+            https://github.com/aosp-mirror/kernel_common.git \
+            ~/kernel 2>&1 || \
+          git clone --depth=1 --single-branch \
+            -b deprecated/android12-5.4 \
+            https://github.com/aosp-mirror/kernel_common.git \
+            ~/kernel
+
+      - name: Download and integrate KernelSU
+        run: |
+          echo ">>> 下载 KernelSU..."
+          cd ~/kernel
+          git clone --depth=1 https://github.com/tiann/KernelSU.git KernelSU 2>&1 || \
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+
+      - name: Setup toolchain PATH
+        run: |
+          # 设置工具链路径
+          CLANG_DIR=~/toolchain/clang/bin
+          GCC64_DIR=~/toolchain/gcc-arm64/bin
+          GCC32_DIR=~/toolchain/gcc-arm32/bin
+
+          echo "$CLANG_DIR" >> $GITHUB_PATH
+          echo "$GCC64_DIR" >> $GITHUB_PATH
+          echo "$GCC32_DIR" >> $GITHUB_PATH
+
+          echo "CLANG_DIR=$CLANG_DIR" >> $GITHUB_ENV
+          echo "GCC64_DIR=$GCC64_DIR" >> $GITHUB_ENV
+          echo "GCC32_DIR=$GCC32_DIR" >> $GITHUB_ENV
+
+      - name: Configure kernel
+        run: |
+          echo ">>> 配置内核..."
+          cd ~/kernel
+          
+          # 清理
+          make O=out ARCH=arm64 clean 2>/dev/null || true
+          make O=out ARCH=arm64 mrproper 2>/dev/null || true
+          
+          # 先用 GKI 默认配置
+          make O=out ARCH=arm64 gki_defconfig
+          
+          # 开启 KernelSU 所需的内核选项
+          echo ">>> 启用 KernelSU 所需内核配置..."
+          cd ~/kernel/out
+          
+          # 开启 KPROBES (KernelSU 核心依赖)
+          scripts/config --file .config \
+            --enable KPROBES \
+            --enable HAVE_KPROBES \
+            --enable KPROBE_EVENTS \
+            --enable KPROBE_EVENTS_ON_NOTRACE
+          
+          # 开启 OVERLAY_FS (模块挂载)
+          scripts/config --file .config \
+            --enable OVERLAY_FS
+          
+          # 开启模块支持
+          scripts/config --file .config \
+            --enable MODULES \
+            --enable MODULE_UNLOAD \
+            --enable MODULE_FORCE_UNLOAD
+          
+          # 关闭一些可能导致编译问题的调试选项
+          scripts/config --file .config \
+            --disable DEBUG_INFO \
+            --disable DEBUG_KERNEL \
+            --disable DEBUG_FS
+          
+          # 更新配置
+          cd ~/kernel
+          make O=out ARCH=arm64 olddefconfig
+          
+          echo ">>> 内核配置完成"
+
+      - name: Build kernel
+        run: |
+          echo ">>> 开始编译 GKI 5.4 内核..."
+          cd ~/kernel
+          
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export STRIP=llvm-strip
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export READELF=llvm-readelf
+          
+          make O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            STRIP=llvm-strip \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            READELF=llvm-readelf \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            -j$(nproc --all) 2>&1 | tee build.log
+          
+          echo ">>> 编译完成！"
+
+      - name: Check build result
+        run: |
+          echo ">>> 检查编译产物..."
+          cd ~/kernel
+          
+          if [ -f out/arch/arm64/boot/Image ]; then
+            echo "✅ Image 编译成功！"
+            ls -lh out/arch/arm64/boot/Image*
+          else
+            echo "❌ Image 未找到，检查编译日志..."
+            tail -100 build.log
+            exit 1
+          fi
+          
+          # 检查是否有 dtb/dtbo
+          ls -lh out/arch/arm64/boot/dts/ 2>/dev/null || echo "无 DTS 文件"
+
+      - name: Package artifacts
+        run: |
+          echo ">>> 打包编译产物..."
+          mkdir -p ~/artifacts
+          cd ~/kernel
+          
+          # 复制内核镜像
+          cp out/arch/arm64/boot/Image ~/artifacts/Image 2>/dev/null || true
+          cp out/arch/arm64/boot/Image.gz ~/artifacts/Image.gz 2>/dev/null || true
+          
+          # 复制模块
+          mkdir -p ~/artifacts/modules 2>/dev/null
+          find out/ -name "*.ko" -exec cp {} ~/artifacts/modules/ \; 2>/dev/null || true
+          
+          # 复制配置文件
+          cp out/.config ~/artifacts/kernel_config 2>/dev/null || true
+          
+          # 复制编译日志
+          cp build.log ~/artifacts/build.log 2>/dev/null || true
+          
+          # 打包
+          cd ~/artifacts
+          tar -czf GKI-${KERNEL_VERSION}-${DEVICE}-${BUILD_TIME}.tar.gz *
+          
+          echo ">>> 打包完成！"
+          ls -lh ~/artifacts/
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GKI-${{ env.KERNEL_VERSION }}-${{ env.DEVICE }}-${{ env.BUILD_TIME }}
+          path: ~/artifacts/GKI-*.tar.gz
+          retention-days: 30
+          compression-level: 9
+
+      - name: Build summary
+        run: |
+          echo "============================================"
+          echo "  GKI ${{ env.KERNEL_VERSION }} 内核编译完成"
+          echo "  设备: ${{ env.DEVICE }}"
+          echo "  时间: ${{ env.BUILD_TIME }}"
+          echo "============================================"
+          echo ""
+          echo "产物包含:"
+          echo "  - Image (内核镜像)"
+          echo "  - modules/*.ko (内核模块)"
+          echo "  - kernel_config (.config)"
+          echo ""
+          echo "请到 Actions 页面的 Artifacts 下载编译产物。"
+          echo "============================================"
